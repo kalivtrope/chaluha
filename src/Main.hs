@@ -11,13 +11,21 @@ import Data.Map
 import GHC.IO.Handle (hFlush)
 import System.Environment ()
 import System.IO (stdout)
+import Prelude hiding (lookup)
 
 type Identifier = String
 
--- AST based on https://www.lua.org/manual/5.4/manual.html#9
+-- AST is based on https://www.lua.org/manual/5.4/manual.html#9
 data Numeric
   = Integer Data.Int.Int64
   | Double Double
+  deriving (Show)
+
+instance Ord Numeric where
+  Integer a <= Integer b = a <= b
+  Integer a <= Double b = fromIntegral a <= b
+  Double a <= Integer b = a <= fromIntegral b
+  Double a <= Double b = a <= b
 
 instance Eq Numeric where
   Integer a == Integer b = a == b
@@ -27,14 +35,14 @@ instance Eq Numeric where
 
 data Table = TableData
   { getTable :: Map Value Value
-  , getMetatable' :: Table
-  }
+  , getMetatable :: Maybe Table
+  } deriving (Show, Eq, Ord)
+
 
 data Value = Value
-  { getId :: Int
+  { getReferenceId :: Maybe Int
   , getValue :: Type
-  , getMetatable :: Table
-  }
+  } deriving (Show, Ord)
 
 data Type
   = Nil
@@ -49,22 +57,24 @@ data Type
   | Table Table
   -- | Userdata
   -- | Thread
+  deriving (Show, Eq, Ord)
 
 instance Eq Value where
   (==) :: Value -> Value -> Bool
-  (Value _ Nil _) == (Value _ Nil _) = True
-  (Value _ (Number v1) _) == (Value _ (Number v2) _) = v1 == v2
-  (Value _ (Boolean b1) _) == (Value _ (Boolean b2) _) = b1 == b2
-  (Value _ (String s1) _) == (Value _ (String s2) _) = s1 == s2
-  (Value id1 (Function {}) mt1) == (Value id2 (Function {}) mt2) = (id1 == id2) -- TODO add support for __eq
-  (Value id1 (Table t1) mt1) == (Value id2 (Table t2) mt2) = (id1 == id2) -- TODO
+  (Value _ Nil) == (Value _ Nil) = True
+  (Value _ (Number v1)) == (Value _ (Number v2)) = v1 == v2
+  (Value _ (Boolean b1)) == (Value _ (Boolean b2)) = b1 == b2
+  (Value _ (String s1)) == (Value _ (String s2)) = s1 == s2
+  (Value id1 (Function {})) == (Value id2 (Function {})) = id1 == id2
+  (Value id1 (Table t1)) == (Value id2 (Table t2)) =
+    case (t1, t2) of
+      (TableData r1 mt1, TableData r2 mt2) -> (id1 == id2) -- TODO
   _ == _ = False
-
--- instance Ord Value where
 
 data Lhs
   = LIdent Identifier
   | LIndex Expr Expr
+  deriving (Show, Eq, Ord)
 
 data Statement
   = Assignment [Lhs] [Expr]
@@ -79,11 +89,12 @@ data Statement
   | ForIn [Identifier] [Expr] Block
   -- | Label String
   -- | Goto String
+  deriving (Show, Eq, Ord)
 
 data Block = Block
   { getStatements :: [Statement]
   , getReturn :: Maybe [Expr]
-  }
+  } deriving (Show, Eq, Ord)
 
 data Expr
   = EValue Value
@@ -94,6 +105,7 @@ data Expr
   | EPar Expr
   | ELhs Lhs
   | EDots
+  deriving (Show, Eq, Ord)
 
 data BinOp
   = Add
