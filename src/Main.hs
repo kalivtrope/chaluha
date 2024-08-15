@@ -14,9 +14,16 @@ import System.IO (stdout)
 
 type Identifier = String
 
+-- AST based on https://www.lua.org/manual/5.4/manual.html#9
 data Numeric
   = Integer Data.Int.Int64
   | Double Double
+
+instance Eq Numeric where
+  Integer a == Integer b = a == b
+  Integer a == Double b = fromIntegral a == b
+  Double a == Integer b = a == fromIntegral b
+  Double a == Double b = a == b
 
 data Table = TableData
   { getTable :: Map Value Value
@@ -46,7 +53,7 @@ data Type
 instance Eq Value where
   (==) :: Value -> Value -> Bool
   (Value _ Nil _) == (Value _ Nil _) = True
-  (Value _ (Number v1) _) == (Value _ (Number v2) _) = undefined
+  (Value _ (Number v1) _) == (Value _ (Number v2) _) = v1 == v2
   (Value _ (Boolean b1) _) == (Value _ (Boolean b2) _) = b1 == b2
   (Value _ (String s1) _) == (Value _ (String s2) _) = s1 == s2
   (Value id1 (Function {}) mt1) == (Value id2 (Function {}) mt2) = (id1 == id2) -- TODO add support for __eq
@@ -69,7 +76,7 @@ data Statement
   | If Expr Block (Maybe [(Expr, Block)]) (Maybe Block)
   | Local [Identifier] (Maybe [Expr])
   | ForNum Expr Expr (Maybe Expr) Block
-  | ForIn [(Identifier, Expr)] Block
+  | ForIn [Identifier] [Expr] Block
   -- | Label String
   -- | Goto String
 
@@ -80,24 +87,38 @@ data Block = Block
 
 data Expr
   = EValue Value
-  | EOp Op Expr Expr
+  | EBinOp BinOp Expr Expr
+  | EUnOp UnOp Expr
+  | EVar Identifier
+  | ECall Identifier [Expr]
+  | EPar Expr
   | ELhs Lhs
   | EDots
 
-data Op
+data BinOp
   = Add
   | Sub
   | Mul
   | Div
-  | Mod
+  | FloorDiv
   | Pow
+  | Mod
   | Concat
   | Eq
   | Lt
   | Le
   | And
   | Or
+  | BitwiseAnd
+  | BitwiseOr
+  | Xor
+  | Lshift
+  | Rshift
+
+data UnOp
+  = Minus
   | Not
   | Len
+  | Neg
 main :: IO ()
 main = undefined
