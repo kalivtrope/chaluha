@@ -91,6 +91,12 @@ stringP str =
                  ++ "\'")
       result -> result
 
+pIfNotq :: String -> Parser String -> Parser String -> Parser String
+pIfNotq desc (Parser p) (Parser q) = Parser $ \input -> 
+  case q input of
+    Left _ -> p input
+    Right (a,_) -> Left $ ParserError (inputLoc input) ("Expected " ++ desc ++ ", but found '" ++ a ++ "'")
+
 parseIf :: String -> (Char -> Bool) -> Parser Char
 parseIf desc f =
   Parser $ \input ->
@@ -117,6 +123,27 @@ span1P desc = some . parseIf desc
 ws :: Parser String
 ws = spanP "whitespace character" isSpace
 
+luaExpr :: Parser Expr
+luaExpr = luaValue
+
+luaValue :: Parser Expr
+luaValue = luaNil <|> luaNumber <|> luaBool <|> luaString
+
+keywords :: [String]
+keywords = ["and", "break", "do", "else", "elseif", "end",
+           "false", "for", "function", "goto", "if", "in", "local", "nil", "not",
+            "or", "repeat", "return", "then", "true", "until", "while"]
+
+keywordsP :: Parser String
+keywordsP = foldr (\kw p -> p <|> stringP kw) empty keywords
+
+isAlphaOrUnderscore :: Char -> Bool
+isAlphaOrUnderscore c = isAlpha c || c == '_'
+
+luaIdentifier :: Parser Expr
+luaIdentifier = EVar <$> pIfNotq "identifier" bareIdentifier keywordsP
+  where bareIdentifier = (:) <$> parseIf "start of identifier" isAlphaOrUnderscore <*> spanP "part of identifier" isAlphaNum
+
 luaNil :: Parser Expr
 luaNil = EType Nil <$ stringP "nil"
 
@@ -128,6 +155,9 @@ luaBool = luaTrue <|> luaFalse
 
 luaNumber :: Parser Expr
 luaNumber = EType . Number <$> (numberHex <|> numberDec)
+
+luaString :: Parser Expr
+luaString = EType . String <$> (charP '"' *> spanP "quote" (/= '"') <* charP '"')
 
 option :: a -> Parser a -> Parser a
 option defVal p = p <|> pure defVal
@@ -195,3 +225,5 @@ partsToNum fbase ebase sign dec frac exp' =
     res :: Double
     res =
       combineExp (fromIntegral sign * combineFrac (fromIntegral dec) frac) exp'
+
+shortComment = stringP "--" *> ("" <$ spanP "non-newline character" (/= '\n'))
