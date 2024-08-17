@@ -137,12 +137,47 @@ retStmt = stringP "return" *> ws *> explist <* ws <* optional (charP ';')
 luaStmt :: Parser Statement
 luaStmt =
   luaAssignment
+    <|> localAssignment
     <|> dummy
     <|> break
     <|> doBlock
     <|> whileBlock
     <|> repeatUntilBlock
     <|> ifStmt
+    <|> forNum
+    <|> forIn
+    <|> namedFunc
+
+namedFunc :: Parser Statement
+namedFunc =
+  (\name vars block -> Assignment [LIdent name] [EFuncDef vars block])
+    <$> (stringP "function" *> ws *> luaIdentifier)
+    <*> (charP '(' *> ws *> identlist <* ws <* charP ')' <* ws)
+    <*> (luaBlock <* ws <* stringP "end")
+
+forNum :: Parser Statement
+forNum =
+  ForNum
+    <$> (stringP "for" *> ws *> luaExpr)
+    <*> (ws *> luaExpr <* ws)
+    <*> optional luaExpr
+    <*> (ws *> luaBlock)
+
+forIn :: Parser Statement
+forIn =
+  ForIn
+    <$> (stringP "for" *> ws *> identlist <* ws)
+    <*> (stringP "in" *> ws *> explist <* ws)
+    <*> (stringP "do" *> ws *> luaBlock <* ws <* stringP "end")
+
+localAssignment :: Parser Statement
+localAssignment =
+  Local
+    <$> (stringP "local" *> ws *> identlist <* ws)
+    <*> optional (charP '=' *> ws *> explist)
+
+identlist :: Parser [Identifier]
+identlist = sepBy1 (ws *> charP ',' <* ws) luaIdentifier
 
 dummy :: Parser Statement
 dummy = Dummy <$ stringP ";"
@@ -176,7 +211,22 @@ break = Break <$ stringP "break"
 
 luaExpr :: Parser Expr
 luaExpr =
-  luaValue <|> luaVar <|> (charP '(' *> ws *> luaExpr <* ws <* charP ')')
+  luaValue
+    <|> luaVar
+    <|> unnamedFunc
+    <|> (charP '(' *> ws *> luaExpr <* ws <* charP ')')
+
+unnamedFunc =
+  EFuncDef
+    <$> (stringP "function"
+           *> ws
+           *> charP '('
+           *> ws
+           *> identlist
+           <* ws
+           <* charP ')'
+           <* ws)
+    <*> (luaBlock <* ws <* stringP "end")
 
 luaValue :: Parser Expr
 luaValue = luaNil <|> luaNumber <|> luaBool <|> luaString
@@ -189,7 +239,8 @@ sepBy sep element = sepBy1 sep element <|> pure []
 
 luaAssignment :: Parser Statement
 luaAssignment =
-  (Assignment . map (\(EVar y) -> LIdent y) <$> (varlist <* ws <* charP '=' <* ws))
+  (Assignment . map (\(EVar y) -> LIdent y)
+     <$> (varlist <* ws <* charP '=' <* ws))
     <*> explist
   where
     varlist = sepBy1 (ws *> charP ',' <* ws) luaVar
@@ -198,7 +249,7 @@ explist :: Parser [Expr]
 explist = sepBy1 (ws *> charP ',' <* ws) luaExpr
 
 luaVar :: Parser Expr
-luaVar = luaIdentifier
+luaVar = EVar <$> luaIdentifier
 
 keywords :: [String]
 keywords =
@@ -232,8 +283,8 @@ keywordsP = foldr (\kw p -> p <|> stringP kw) empty keywords
 isAlphaOrUnderscore :: Char -> Bool
 isAlphaOrUnderscore c = isAlpha c || c == '_'
 
-luaIdentifier :: Parser Expr
-luaIdentifier = EVar <$> pIfNotq "identifier" bareIdentifier keywordsP
+luaIdentifier :: Parser Identifier
+luaIdentifier = pIfNotq "identifier" bareIdentifier keywordsP
   where
     bareIdentifier =
       (:)

@@ -101,6 +101,7 @@ data Expr
   | EPar Expr
   | ELhs Lhs
   | EDots
+  | EFuncDef [Identifier] Block
   deriving (Show, Eq, Ord)
 
 data BinOp
