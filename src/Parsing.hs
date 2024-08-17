@@ -8,8 +8,8 @@ import Control.Applicative
 import Data.Char
 import qualified Data.Int as Data.Integer
 import Data.Maybe
-import qualified GHC.Enum as Int64
 import LuaTypes
+import Prelude hiding (break)
 
 type Int64 = Data.Integer.Int64
 
@@ -92,10 +92,15 @@ stringP str =
       result -> result
 
 pIfNotq :: String -> Parser String -> Parser String -> Parser String
-pIfNotq desc (Parser p) (Parser q) = Parser $ \input ->
-  case q input of
-    Left _ -> p input
-    Right (a,_) -> Left $ ParserError (inputLoc input) ("Expected " ++ desc ++ ", but found '" ++ a ++ "'")
+pIfNotq desc (Parser p) (Parser q) =
+  Parser $ \input ->
+    case q input of
+      Left _ -> p input
+      Right (a, _) ->
+        Left
+          $ ParserError
+              (inputLoc input)
+              ("Expected " ++ desc ++ ", but found '" ++ a ++ "'")
 
 parseIf :: String -> (Char -> Bool) -> Parser Char
 parseIf desc f =
@@ -121,10 +126,57 @@ span1P :: String -> (Char -> Bool) -> Parser String
 span1P desc = some . parseIf desc
 
 ws :: Parser String
-ws = spanP "whitespace character" isSpace
+ws = many (parseIf "whitespace character" isSpace <|> (' ' <$ shortComment))
+
+luaBlock :: Parser Block
+luaBlock = Block <$> (ws *> many (luaStmt <* ws)) <*> optional retStmt
+
+retStmt :: Parser [Expr]
+retStmt = stringP "return" *> ws *> explist <* ws <* optional (charP ';')
+
+luaStmt :: Parser Statement
+luaStmt =
+  luaAssignment
+    <|> dummy
+    <|> break
+    <|> doBlock
+    <|> whileBlock
+    <|> repeatUntilBlock
+    <|> ifStmt
+
+dummy :: Parser Statement
+dummy = Dummy <$ stringP ";"
+
+ifStmt :: Parser Statement
+ifStmt = If <$> if' <*> then' <*> elseifs <*> optional else' <* stringP "end"
+  where
+    if' = stringP "if" *> ws *> luaExpr <* ws
+    then' = stringP "then" *> ws *> luaBlock <* ws
+    elseifs = many $ (,) <$> (stringP "elseif" *> ws *> luaExpr <* ws) <*> then'
+    else' = stringP "else" *> ws *> luaBlock <* ws
+
+repeatUntilBlock :: Parser Statement
+repeatUntilBlock =
+  RepeatUntil
+    <$> (stringP "repeat" *> ws *> luaExpr <* ws)
+    <*> (stringP "until" *> ws *> luaBlock <* stringP "end")
+
+whileBlock :: Parser Statement
+whileBlock =
+  While
+    <$> (stringP "while" *> ws *> luaExpr <* ws)
+    <*> luaBlock
+    <* stringP "end"
+
+doBlock :: Parser Statement
+doBlock = Do <$> (stringP "do" *> ws *> luaBlock <* stringP "end")
+
+break :: Parser Statement
+break = Break <$ stringP "break"
 
 luaExpr :: Parser Expr
-luaExpr = luaValue <|> luaVar
+luaExpr =
+  luaValue <|> luaVar <|> (charP '(' *> ws *> luaExpr <* ws <* charP ')')
 
 luaValue :: Parser Expr
 luaValue = luaNil <|> luaNumber <|> luaBool <|> luaString
@@ -135,17 +187,44 @@ sepBy1 sep element = (:) <$> element <*> many (sep *> element)
 sepBy :: Parser a -> Parser b -> Parser [b]
 sepBy sep element = sepBy1 sep element <|> pure []
 
--- luaAssignment :: Parser Expr
-luaAssignment = (Assignment . map (\(EVar y) -> LIdent y) <$> (varlist <* ws <* charP '=')) <*> explist
-  where varlist = sepBy1 (ws *> charP ',' <* ws) luaVar
-        explist = sepBy1 (ws *> charP ',' <* ws) luaExpr
+luaAssignment :: Parser Statement
+luaAssignment =
+  (Assignment . map (\(EVar y) -> LIdent y) <$> (varlist <* ws <* charP '=' <* ws))
+    <*> explist
+  where
+    varlist = sepBy1 (ws *> charP ',' <* ws) luaVar
 
+explist :: Parser [Expr]
+explist = sepBy1 (ws *> charP ',' <* ws) luaExpr
+
+luaVar :: Parser Expr
 luaVar = luaIdentifier
 
 keywords :: [String]
-keywords = ["and", "break", "do", "else", "elseif", "end",
-           "false", "for", "function", "goto", "if", "in", "local", "nil", "not",
-            "or", "repeat", "return", "then", "true", "until", "while"]
+keywords =
+  [ "and"
+  , "break"
+  , "do"
+  , "else"
+  , "elseif"
+  , "end"
+  , "false"
+  , "for"
+  , "function"
+  , "goto"
+  , "if"
+  , "in"
+  , "local"
+  , "nil"
+  , "not"
+  , "or"
+  , "repeat"
+  , "return"
+  , "then"
+  , "true"
+  , "until"
+  , "while"
+  ]
 
 keywordsP :: Parser String
 keywordsP = foldr (\kw p -> p <|> stringP kw) empty keywords
@@ -155,7 +234,11 @@ isAlphaOrUnderscore c = isAlpha c || c == '_'
 
 luaIdentifier :: Parser Expr
 luaIdentifier = EVar <$> pIfNotq "identifier" bareIdentifier keywordsP
-  where bareIdentifier = (:) <$> parseIf "start of identifier" isAlphaOrUnderscore <*> spanP "part of identifier" isAlphaNum
+  where
+    bareIdentifier =
+      (:)
+        <$> parseIf "start of identifier" isAlphaOrUnderscore
+        <*> spanP "part of identifier" isAlphaNum
 
 luaNil :: Parser Expr
 luaNil = EType Nil <$ stringP "nil"
@@ -170,7 +253,8 @@ luaNumber :: Parser Expr
 luaNumber = EType . Number <$> (numberHex <|> numberDec)
 
 luaString :: Parser Expr
-luaString = EType . String <$> (charP '"' *> spanP "quote" (/= '"') <* charP '"')
+luaString =
+  EType . String <$> (charP '"' *> spanP "quote" (/= '"') <* charP '"')
 
 option :: a -> Parser a -> Parser a
 option defVal p = p <|> pure defVal

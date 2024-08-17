@@ -78,10 +78,11 @@ data Statement
   | Do Block
   | While Expr Block
   | RepeatUntil Expr Block
-  | If Expr Block (Maybe [(Expr, Block)]) (Maybe Block)
+  | If Expr Block [(Expr, Block)] (Maybe Block)
   | Local [Identifier] (Maybe [Expr])
   | ForNum Expr Expr (Maybe Expr) Block
   | ForIn [Identifier] [Expr] Block
+  | Dummy
   -- | Label String
   -- | Goto String
   deriving (Show, Eq, Ord)
