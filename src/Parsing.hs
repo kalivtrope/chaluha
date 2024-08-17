@@ -92,7 +92,7 @@ stringP str =
       result -> result
 
 pIfNotq :: String -> Parser String -> Parser String -> Parser String
-pIfNotq desc (Parser p) (Parser q) = Parser $ \input -> 
+pIfNotq desc (Parser p) (Parser q) = Parser $ \input ->
   case q input of
     Left _ -> p input
     Right (a,_) -> Left $ ParserError (inputLoc input) ("Expected " ++ desc ++ ", but found '" ++ a ++ "'")
@@ -124,10 +124,23 @@ ws :: Parser String
 ws = spanP "whitespace character" isSpace
 
 luaExpr :: Parser Expr
-luaExpr = luaValue
+luaExpr = luaValue <|> luaVar
 
 luaValue :: Parser Expr
 luaValue = luaNil <|> luaNumber <|> luaBool <|> luaString
+
+sepBy1 :: Parser a -> Parser b -> Parser [b]
+sepBy1 sep element = (:) <$> element <*> many (sep *> element)
+
+sepBy :: Parser a -> Parser b -> Parser [b]
+sepBy sep element = sepBy1 sep element <|> pure []
+
+-- luaAssignment :: Parser Expr
+luaAssignment = (Assignment . map (\(EVar y) -> LIdent y) <$> (varlist <* ws <* charP '=')) <*> explist
+  where varlist = sepBy1 (ws *> charP ',' <* ws) luaVar
+        explist = sepBy1 (ws *> charP ',' <* ws) luaExpr
+
+luaVar = luaIdentifier
 
 keywords :: [String]
 keywords = ["and", "break", "do", "else", "elseif", "end",
