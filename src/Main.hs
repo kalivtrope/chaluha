@@ -11,4 +11,4 @@ import Control.Applicative
 main :: IO ()
 main = do
     content <- getContents
-    print (runParser luaBlock $ Input 1 content)
+    print (runParser (luaBlock <* ws <* eof) $ Input 1 content)

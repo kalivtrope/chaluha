@@ -102,6 +102,14 @@ pIfNotq desc (Parser p) (Parser q) =
               (inputLoc input)
               ("Expected " ++ desc ++ ", but found '" ++ a ++ "'")
 
+eof :: Parser Char
+eof = Parser $ \input ->
+  case inputHead input of
+    Just (y,_) -> Left $ ParserError
+                    (inputLoc input)
+                    ("Expected end of file, but found '" ++ [y] ++ "'")
+    Nothing -> Right (' ', input)
+
 parseIf :: String -> (Char -> Bool) -> Parser Char
 parseIf desc f =
   Parser $ \input ->
@@ -112,7 +120,7 @@ parseIf desc f =
           Left
             $ ParserError
                 (inputLoc input)
-                ("Expected " ++ desc ++ ", but found '" ++ [y] ++ "'")
+                ("Unexpected symbol: '" ++ [y] ++ "'")
       _ ->
         Left
           $ ParserError
