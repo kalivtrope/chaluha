@@ -104,8 +104,10 @@ data Statement
   deriving (Eq, Ord)
 
 commaSeparatedList :: [String] -> String
-commaSeparatedList vals = intercalate ", " vals
-showList l = Data.List.map show $ l
+commaSeparatedList = intercalate ", "
+showList :: Show a => [a] -> [String]
+showList = Data.List.map show
+commaSeparatedShow :: Show a => [a] -> String
 commaSeparatedShow vals = commaSeparatedList (showList vals)
 
 indent :: String -> String
@@ -166,7 +168,7 @@ data Expr
 
 isAtomic :: Expr -> Bool
 isAtomic (EType _) = True
-isAtomic (EBinOp _ _ _) = False
+isAtomic (EBinOp {}) = False
 isAtomic (EUnOp _ _) = True
 isAtomic (EVar _) = True
 isAtomic (ECall _ _) = True

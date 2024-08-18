@@ -149,7 +149,7 @@ luaBlock :: Parser Block
 luaBlock = Block <$> (many luaStmt) <*> optional retStmt
 
 retStmt :: Parser [Expr]
-retStmt = stringP "return" *> explist <* optional (charP ';')
+retStmt = stringP "return" *> (fromMaybe [] <$> optional explist) <* optional (charP ';')
 
 luaStmt :: Parser Statement
 luaStmt =
