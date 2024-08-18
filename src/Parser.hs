@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 
-module Parsing where
+module Parser where
 
 import Control.Applicative
 import Data.Char
@@ -175,9 +175,10 @@ namedFunc =
 forNum :: Parser Statement
 forNum =
   ForNum
-    <$> (stringP "for" *> luaExpr)
-    <*> luaExpr
-    <*> optional luaExpr
+    <$> (stringP "for" *> luaIdentifier)
+    <*> (charP '=' *> luaExpr)
+    <*> (charP ',' *> luaExpr)
+    <*> optional (charP ',' *> luaExpr)
     <*> luaBlock
 
 forIn :: Parser Statement
@@ -308,7 +309,7 @@ luaIdentifier = pIfNotq "identifier" bareIdentifier keywordsP
   where
     bareIdentifier =
       (:)
-        <$> parseIf "start of identifier" isAlphaOrUnderscore
+        <$> parseIf' "start of identifier" isAlphaOrUnderscore
         <*> spanP "part of identifier" isAlphaNum
 
 luaNil :: Parser Expr
