@@ -210,12 +210,16 @@ break :: Parser Statement
 break = Break <$ stringP "break"
 
 luaExpr :: Parser Expr
-luaExpr =
+luaExpr = expr0
+
+luaAtom :: Parser Expr
+luaAtom =
   luaValue
     <|> luaVar
     <|> unnamedFunc
     <|> (charP '(' *> ws *> luaExpr <* ws <* charP ')')
 
+unnamedFunc :: Parser Expr
 unnamedFunc =
   EFuncDef
     <$> (stringP "function"
@@ -374,4 +378,65 @@ partsToNum fbase ebase sign dec frac exp' =
     res =
       combineExp (fromIntegral sign * combineFrac (fromIntegral dec) frac) exp'
 
+shortComment :: Parser String
 shortComment = stringP "--" *> ("" <$ spanP "non-newline character" (/= '\n'))
+
+expr0 = chainl1 expr1 $ EBinOp Or <$ stringP "or"
+
+expr1 = chainl1 expr2 $ EBinOp And <$ stringP "and"
+
+expr2 =
+  chainl1 expr3
+    $ EBinOp
+        <$> ((Le <$ stringP "<=")
+               <|> (Ge <$ stringP ">=")
+               <|> (Lt <$ stringP "<")
+               <|> (Gt <$ stringP ">")
+               <|> (Ne <$ stringP "~=")
+               <|> (Lt <$ stringP "<")
+               <|> (Gt <$ stringP ">")
+               <|> (Eq <$ stringP "=="))
+
+expr3 = chainl1 expr4 $ EBinOp BitwiseOr <$ charP '|'
+
+expr4 = chainl1 expr5 $ EBinOp Xor <$ charP '~'
+
+expr5 = chainl1 expr6 $ EBinOp BitwiseAnd <$ charP '&'
+
+expr6 = chainr1 expr7 $ EBinOp Concat <$ stringP ".."
+
+expr7 = chainl1 expr8 $ EBinOp <$> (Add <$ charP '+' <|> Sub <$ charP '-')
+
+expr8 =
+  chainl1 expr9
+    $ EBinOp
+        <$> ((Mul <$ charP '*')
+               <|> (Div <$ stringP "/")
+               <|> (Mod <$ stringP "%"))
+
+expr9 =
+  prefix luaAtom
+    $ EUnOp
+        <$> ((Not <$ stringP "not")
+               <|> (Len <$ charP '#')
+               <|> (Minus <$ charP '-'))
+
+prefix :: Parser a -> Parser (a -> a) -> Parser a
+prefix p op = (op <* ws) <*> prefix p op <|> p
+
+infixl1 :: (a -> b) -> Parser a -> Parser (b -> a -> b) -> Parser b
+infixl1 wrap p op = (wrap <$> p) <**> rest
+  where
+    rest = flip (.) <$> (flip <$> op <*> p) <*> rest <|> pure id
+
+-- source: https://dl.acm.org/doi/pdf/10.1145/3471874.3472984
+chainl1 :: Parser a -> Parser (a -> a -> a) -> Parser a
+p `chainl1` op = (p <* ws) <**> rest
+  where
+    rest =
+      flip (.) <$> (flip <$> (ws *> op <* ws) <*> (ws *> p <* ws)) <*> rest
+        <|> pure id
+
+chainr1 :: Parser a -> Parser (a -> a -> a) -> Parser a
+p `chainr1` op =
+  (ws *> p <* ws) <**> (flip <$> (ws *> op <* ws) <*> chainr1 p op <|> pure id)

@@ -110,24 +110,23 @@ data BinOp
   | Mul
   | Div
   | FloorDiv
-  | Pow
   | Mod
   | Concat
   | Eq
   | Lt
+  | Gt
+  | Ge
   | Le
+  | Ne
   | And
   | Or
   | BitwiseAnd
   | BitwiseOr
   | Xor
-  | Lshift
-  | Rshift
   deriving (Show, Eq, Ord)
 
 data UnOp
   = Minus
   | Not
   | Len
-  | Neg
   deriving (Show, Eq, Ord)
