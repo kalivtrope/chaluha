@@ -166,18 +166,21 @@ forNum =
 forIn :: Parser Statement
 forIn =
   ForIn
-    <$> (stringP "for" *> ws *> identlist <* ws)
+    <$> (stringP "for" *> ws *> identlist1 <* ws)
     <*> (stringP "in" *> ws *> explist <* ws)
     <*> (stringP "do" *> ws *> luaBlock <* ws <* stringP "end")
 
 localAssignment :: Parser Statement
 localAssignment =
   Local
-    <$> (stringP "local" *> ws *> identlist <* ws)
+    <$> (stringP "local" *> ws *> identlist1 <* ws)
     <*> optional (charP '=' *> ws *> explist)
 
 identlist :: Parser [Identifier]
-identlist = sepBy1 (ws *> charP ',' <* ws) luaIdentifier
+identlist = sepBy (ws *> charP ',' <* ws) luaIdentifier
+
+identlist1 :: Parser [Identifier]
+identlist1 = sepBy1 (ws *> charP ',' <* ws) luaIdentifier
 
 dummy :: Parser Statement
 dummy = Dummy <$ stringP ";"
