@@ -61,7 +61,10 @@ instance Alternative Parser where
   (Parser p1) <|> (Parser p2) = Parser $ \input -> p1 input <|> p2 input
 
 charP :: Char -> Parser Char
-charP x = Parser f
+charP x = ws *> charP' x <* ws
+
+charP' :: Char -> Parser Char
+charP' x = Parser f
   where
     f input@(inputHead -> Just (y, ys))
       | y == x = Right (x, ys)
@@ -77,9 +80,12 @@ charP x = Parser f
             ("Expected '" ++ [x] ++ "', but reached end of string")
 
 stringP :: String -> Parser String
-stringP str =
+stringP str = ws *> stringP' str <* ws
+
+stringP' :: String -> Parser String
+stringP' str =
   Parser $ \input ->
-    case runParser (traverse charP str) input of
+    case runParser (traverse charP' str) input of
       Left _ ->
         Left
           $ ParserError
@@ -110,8 +116,8 @@ eof = Parser $ \input ->
                     ("Expected end of file, but found '" ++ [y] ++ "'")
     Nothing -> Right (' ', input)
 
-parseIf :: String -> (Char -> Bool) -> Parser Char
-parseIf desc f =
+parseIf' :: String -> (Char -> Bool) -> Parser Char
+parseIf' desc f =
   Parser $ \input ->
     case input of
       (inputHead -> Just (y, ys))
@@ -127,20 +133,23 @@ parseIf desc f =
               (inputLoc input)
               ("Expected " ++ desc ++ ", but reached end of string")
 
-spanP :: String -> (Char -> Bool) -> Parser String
-spanP desc = many . parseIf desc
+parseIf :: String -> (Char -> Bool) -> Parser Char
+parseIf desc f = ws *> parseIf' desc f <* ws
+
+spanP :: String -> (Char -> Bool) -> Parser [Char]
+spanP desc = many . parseIf' desc
 
 span1P :: String -> (Char -> Bool) -> Parser String
-span1P desc = some . parseIf desc
+span1P desc = some . parseIf' desc
 
 ws :: Parser String
-ws = many (parseIf "whitespace character" isSpace <|> (' ' <$ shortComment))
+ws = many (parseIf' "whitespace character" isSpace <|> (' ' <$ shortComment))
 
 luaBlock :: Parser Block
-luaBlock = Block <$> (ws *> many (luaStmt <* ws)) <*> optional retStmt
+luaBlock = Block <$> (many luaStmt) <*> optional retStmt
 
 retStmt :: Parser [Expr]
-retStmt = stringP "return" *> ws *> explist <* ws <* optional (charP ';')
+retStmt = stringP "return" *> explist <* optional (charP ';')
 
 luaStmt :: Parser Statement
 luaStmt =
@@ -159,36 +168,36 @@ luaStmt =
 namedFunc :: Parser Statement
 namedFunc =
   (\name vars block -> Assignment [LIdent name] [EFuncDef vars block])
-    <$> (stringP "function" *> ws *> luaIdentifier)
-    <*> (charP '(' *> ws *> identlist <* ws <* charP ')' <* ws)
-    <*> (luaBlock <* ws <* stringP "end")
+    <$> (stringP "function" *> luaIdentifier)
+    <*> (charP '(' *> identlist <* charP ')')
+    <*> (luaBlock <* stringP "end")
 
 forNum :: Parser Statement
 forNum =
   ForNum
-    <$> (stringP "for" *> ws *> luaExpr)
-    <*> (ws *> luaExpr <* ws)
+    <$> (stringP "for" *> luaExpr)
+    <*> luaExpr
     <*> optional luaExpr
-    <*> (ws *> luaBlock)
+    <*> luaBlock
 
 forIn :: Parser Statement
 forIn =
   ForIn
-    <$> (stringP "for" *> ws *> identlist1 <* ws)
-    <*> (stringP "in" *> ws *> explist <* ws)
-    <*> (stringP "do" *> ws *> luaBlock <* ws <* stringP "end")
+    <$> (stringP "for" *> identlist1)
+    <*> (stringP "in" *> explist)
+    <*> (stringP "do" *> luaBlock <* stringP "end")
 
 localAssignment :: Parser Statement
 localAssignment =
   Local
-    <$> (stringP "local" *> ws *> identlist1 <* ws)
-    <*> optional (charP '=' *> ws *> explist)
+    <$> (stringP "local" *> identlist1)
+    <*> optional (charP '=' *> explist)
 
 identlist :: Parser [Identifier]
-identlist = sepBy (ws *> charP ',' <* ws) luaIdentifier
+identlist = sepBy (charP ',') luaIdentifier
 
 identlist1 :: Parser [Identifier]
-identlist1 = sepBy1 (ws *> charP ',' <* ws) luaIdentifier
+identlist1 = sepBy1 (charP ',') luaIdentifier
 
 dummy :: Parser Statement
 dummy = Dummy <$ stringP ";"
@@ -196,26 +205,26 @@ dummy = Dummy <$ stringP ";"
 ifStmt :: Parser Statement
 ifStmt = If <$> if' <*> then' <*> elseifs <*> optional else' <* stringP "end"
   where
-    if' = stringP "if" *> ws *> luaExpr <* ws
-    then' = stringP "then" *> ws *> luaBlock <* ws
-    elseifs = many $ (,) <$> (stringP "elseif" *> ws *> luaExpr <* ws) <*> then'
-    else' = stringP "else" *> ws *> luaBlock <* ws
+    if' = stringP "if" *> luaExpr
+    then' = stringP "then" *> luaBlock
+    elseifs = many $ (,) <$> (stringP "elseif" *> luaExpr) <*> then'
+    else' = stringP "else" *> luaBlock
 
 repeatUntilBlock :: Parser Statement
 repeatUntilBlock =
   RepeatUntil
-    <$> (stringP "repeat" *> ws *> luaExpr <* ws)
-    <*> (stringP "until" *> ws *> luaBlock <* stringP "end")
+    <$> (stringP "repeat" *> luaExpr)
+    <*> (stringP "until" *> luaBlock <* stringP "end")
 
 whileBlock :: Parser Statement
 whileBlock =
   While
-    <$> (stringP "while" *> ws *> luaExpr <* ws)
+    <$> (stringP "while" *> luaExpr)
     <*> luaBlock
     <* stringP "end"
 
 doBlock :: Parser Statement
-doBlock = Do <$> (stringP "do" *> ws *> luaBlock <* stringP "end")
+doBlock = Do <$> (stringP "do" *> luaBlock <* stringP "end")
 
 break :: Parser Statement
 break = Break <$ stringP "break"
@@ -228,20 +237,16 @@ luaAtom =
   luaValue
     <|> luaVar
     <|> unnamedFunc
-    <|> (charP '(' *> ws *> luaExpr <* ws <* charP ')')
+    <|> (charP '(' *> luaExpr <* charP ')')
 
 unnamedFunc :: Parser Expr
 unnamedFunc =
   EFuncDef
     <$> (stringP "function"
-           *> ws
            *> charP '('
-           *> ws
            *> identlist
-           <* ws
-           <* charP ')'
-           <* ws)
-    <*> (luaBlock <* ws <* stringP "end")
+           <* charP ')')
+    <*> (luaBlock <* stringP "end")
 
 luaValue :: Parser Expr
 luaValue = luaNil <|> luaNumber <|> luaBool <|> luaString
@@ -255,13 +260,13 @@ sepBy sep element = sepBy1 sep element <|> pure []
 luaAssignment :: Parser Statement
 luaAssignment =
   (Assignment . map (\(EVar y) -> LIdent y)
-     <$> (varlist <* ws <* charP '=' <* ws))
+     <$> (varlist <* charP '='))
     <*> explist
   where
-    varlist = sepBy1 (ws *> charP ',' <* ws) luaVar
+    varlist = sepBy1 (charP ',') luaVar
 
 explist :: Parser [Expr]
-explist = sepBy1 (ws *> charP ',' <* ws) luaExpr
+explist = sepBy1 (charP ',') luaExpr
 
 luaVar :: Parser Expr
 luaVar = EVar <$> luaIdentifier
@@ -349,19 +354,19 @@ numberDec =
     <$> optMinus -- sign 
     <* ws
     <*> digits1 -- decimal part
-    <*> optional (charP '.' *> option 0 digits1) -- fractional part
+    <*> optional (charP' '.' *> option 0 digits1) -- fractional part
     <*> optional
-          ((charP 'e' <|> charP 'E') *> ((*) <$> optSign <*> option 0 digits1))
+          ((charP' 'e' <|> charP' 'E') *> ((*) <$> optSign <*> option 0 digits1))
 
 numberHex :: Parser Numeric
 numberHex =
   partsToNum 16 2
     <$> optMinus -- sign 
-    <* (ws <* (stringP "0x" <|> stringP "0X"))
+    <* (ws <* (stringP' "0x" <|> stringP' "0X"))
     <*> hexDigits1 -- decimal part
-    <*> optional (charP '.' *> option 0 hexDigits1) -- fractional part
+    <*> optional (charP' '.' *> option 0 hexDigits1) -- fractional part
     <*> optional
-          ((charP 'p' <|> charP 'P')
+          ((charP' 'p' <|> charP' 'P')
              *> ((*) <$> optSign <*> option 0 hexDigits1))
 
 partsToNum ::
@@ -390,7 +395,7 @@ partsToNum fbase ebase sign dec frac exp' =
       combineExp (fromIntegral sign * combineFrac (fromIntegral dec) frac) exp'
 
 shortComment :: Parser String
-shortComment = stringP "--" *> ("" <$ spanP "non-newline character" (/= '\n'))
+shortComment = stringP' "--" *> ("" <$ spanP "non-newline character" (/= '\n'))
 
 expr0 = chainl1 expr1 $ EBinOp Or <$ stringP "or"
 
