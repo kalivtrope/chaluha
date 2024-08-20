@@ -14,8 +14,8 @@ main = do
         Left e -> print e
         Right val -> do
              --print $ fst val
-            evalResult <- runEvalDefault (evalBlock (fst val) id)
+            evalResult <- runEvalDefault (evalBlock (fst val) pure)
             case evalResult of
                 Left err -> print err
                 Right _ -> pure ()
-    
+

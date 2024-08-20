@@ -119,8 +119,6 @@ data Statement
   | Break
   | Return [Expr]
   | Do Block
-  | While Expr Block
-  | RepeatUntil Expr Block
   | If Expr Block [(Expr, Block)] (Maybe Block)
   | Local [Identifier] (Maybe [Expr])
   | Dummy
@@ -154,10 +152,6 @@ instance Show Statement where
   show (Call fnName es) = fnName ++ "(" ++ commaSeparatedShow es ++ ")"
   show Break = "break"
   show (Do b) = "do" ++ indent ("\n" ++ show b) ++ "\nend"
-  show (While cond b) =
-    "while " ++ show cond ++ " do" ++ indent ("\n" ++ show b) ++ "\nend"
-  show (RepeatUntil cond b) =
-    "repeat" ++ indent ("\n" ++ show b) ++ "\n" ++ "until " ++ show cond
   show (If ifcond tb elseifs elseb) =
     "if "
       ++ show ifcond

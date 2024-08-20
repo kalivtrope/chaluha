@@ -41,13 +41,16 @@ The output of the parser is an AST representing the lua program - a single *bloc
     - only simple identifier names are allowed on the left-hand-side (LHS) of the assignment
 - function calls
     - currently the calls cannot be nested, i.e. `foo(bar)` is allowed while `foo(bar)(baz)` isn't
-- control statements
-    - `break` (only legal inside of a loop)
-    - `return val1,val2,val3` (only legal inside of a function at the end of a block)
-- conditions and loops (`if-elseif-else`, `repeat-until`, `while`)
+- conditions
 - nested blocks (`do`)
+
+See [Examples](./Examples) for example scripts.
+
 ### Unsupported syntax (and the corresponding language features)
-- for loops
+- loops & control statements (`break`, conditional `return`s inside of a function)
+- multiline strings
+- string escape sequences
+- multiline comments
 - `goto`s and labels
 - varargs expressions (`...`) and variadic functions (functions with a variable amount of parameters)
 - tables
@@ -63,8 +66,6 @@ data Statement
   | Break
   | Return [Expr]
   | Do Block
-  | While Expr Block
-  | RepeatUntil Expr Block
   | If Expr Block [(Expr, Block)] (Maybe Block)
   | Local [Identifier] (Maybe [Expr])   -- local assignment
   | Dummy
@@ -122,12 +123,17 @@ data Env = Env
   } deriving (Eq)
 ```
 
-The `Env` is then contained in a `StateT` monad `Eval`:
+The `Env` is contained in a `StateT` monad `Eval`:
 
 ```haskell
 type Eval a = StateT Env (ExceptT LuaError IO) a
 ```
 
 The implementation is based on [this post](https://www.micahcantor.com/blog/about-that-reader-trick/) and the [corresponding code](https://github.com/micahcantor/write-you-a-lisp/).
-The semantics of local and global variables are a bit different in lua, though,
-so I had to bend the functions to (hopefully) make the scopes work.
+The semantics of local and global variables are a bit different in lua (as oppposed to scheme),
+though, so I had to bend the functions to (hopefully) make the scopes work.
+
+## Unfinished parts
+To support arbitrary `return`s and loops (along with `break`s), I tried writing
+the program in continuation-passing-style. I don't think I've quite grasped the concept though,
+but I've at least left the partial implementation inside for potential completion.

@@ -165,8 +165,6 @@ luaStmt =
     <|> dummy
     <|> break
     <|> doBlock
-    <|> whileBlock
-    <|> repeatUntilBlock
     <|> ifStmt
     <|> namedFunc
 
@@ -200,18 +198,6 @@ ifStmt = If <$> if' <*> then' <*> elseifs <*> optional else' <* stringP "end"
     elseifs = many $ (,) <$> (stringP "elseif" *> luaExpr) <*> then'
     else' = stringP "else" *> luaBlock
 
-repeatUntilBlock :: Parser Statement
-repeatUntilBlock =
-  RepeatUntil
-    <$> (stringP "repeat" *> luaExpr)
-    <*> (stringP "until" *> luaBlock <* stringP "end")
-
-whileBlock :: Parser Statement
-whileBlock =
-  While
-    <$> (stringP "while" *> luaExpr)
-    <*> luaBlock
-    <* stringP "end"
 
 doBlock :: Parser Statement
 doBlock = Do <$> (stringP "do" *> luaBlock <* stringP "end")
