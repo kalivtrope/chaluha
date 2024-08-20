@@ -2,10 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 
 module Main where
-import LuaTypes
 import Parser
-import System.Environment
-import Control.Applicative
 import Eval (runEvalDefault, evalBlock)
 
 
@@ -16,9 +13,9 @@ main = do
     case parseResult of
         Left e -> print e
         Right val -> do
-             -- print $ fst val
-             evalResult <- runEvalDefault (evalBlock $ fst val)
-             case evalResult of
+             --print $ fst val
+            evalResult <- runEvalDefault (evalBlock (fst val) id)
+            case evalResult of
                 Left err -> print err
                 Right _ -> pure ()
     

@@ -107,7 +107,7 @@ instance Show Value where
   show (Boolean b) = show b
   show (String s) = show s
   show (Builtin _) = "builtin"
-  show _ = undefined
+  show (Function {}) = "function"
 
 type Lhs
   = String
@@ -278,7 +278,8 @@ instance Show UnOp where
   show Len = "#"
 
 data LuaError
-  = UnsupportedOperation String Value Value
+  = UnsupportedBinOperation String Expr Expr
+  | UnsupportedUnOperation String Expr
   | NotCallable Value
   deriving (Eq)
 
@@ -286,13 +287,18 @@ instance Show LuaError where
   show err =
     "Error: "
       ++ case err of
-           UnsupportedOperation opStr v1 v2 ->
+           UnsupportedBinOperation opStr v1 v2 ->
              "unsupported operands for '"
                ++ opStr
                ++ "': "
                ++ show v1
                ++ " "
                ++ show v2
+           UnsupportedUnOperation opStr v -> 
+                "unsupported operand for '"
+                ++ opStr
+                ++ "': "
+                ++ show v
            NotCallable v -> "'" ++ show v ++ "' is not callable"
 
 data Env = Env
@@ -345,11 +351,6 @@ dumpEnv (Env bindings' parent') =
       Nothing -> pure ()
       Just p -> dumpEnv p
 
--- remove a variable when assigning it to nil
-unbind :: String -> Env -> Eval Env
-unbind name env = do
-  pure $ env {bindings = Map.delete name (bindings env)}
-
 lookup :: String -> Env -> Eval Value
 lookup name (Env bindings' parent') =
   case Map.lookup name bindings' of
@@ -362,22 +363,6 @@ lookup name (Env bindings' parent') =
 
 bindAll :: Env -> [(Identifier, Value)] -> Eval Env
 bindAll = foldrM (uncurry bind)
-
-withEnv :: Env -> Eval a -> Eval a
-withEnv env computation = do
-  -- old <- get
-  put env
-  result <- computation
-  env' <- get
-  put $ Env {bindings = (case parent env' of
-                          Nothing -> Map.empty
-                          Just e -> bindings e), parent = parent env'}
-  -- env' <- get
-  -- x <- lookup "x" env'
-  -- p <- lookup "print" env
-  -- p' <- lookup "print" env'
-  -- liftIO $ print $ "got x: " ++ show x ++ " parent exists: " ++ show (isNothing $ parent env') ++ " original nest: " ++ show p ++ " current: " ++ show p' 
-  pure result
 
 builtins :: Map.Map String Value
 builtins = Builtin . BuiltinCall <$> Map.fromList

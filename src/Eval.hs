@@ -14,142 +14,210 @@ runEvalDefault computation = do
     env <- defaultEnv
     runEval env computation
 
-evalBlock :: Block -> Eval [Value]
-evalBlock b = do
+evalBlock :: Block -> ([Value] -> [Value]) -> Eval [Value]
+evalBlock b ret = do
     env <- get
     let env' = Env {bindings = empty, parent = Just env}
     put env'
-    results <- mapM evalStmt (getStatements b)
+    results <- mapM (`evalStmt` ret) (getStatements b)
     env'' <- get
     put $ Env {bindings = (case parent env'' of
                         Nothing -> empty
                         Just e -> bindings e), parent = parent env''}
     case results of
-        [] -> pure []
-        _ -> pure $ last results
+        [] -> pure $ ret []
+        _ -> pure $ ret $ last results
 
-evalStmt :: Statement -> Eval [Value]
-evalStmt (Return e) = undefined
-evalStmt (Local ids Nothing) = do
+luaFlattenList :: [[Value]] -> [Value]
+luaFlattenList vals = let vals' = Prelude.filter (/= []) vals in case vals' of
+                    [] -> []
+                    _ -> Prelude.map head (init vals') ++ last vals'
+
+evalStmt :: Statement -> ([Value] -> [Value]) -> Eval [Value]
+evalStmt (Return e) _ = do
+    evals <- mapM (`evalExpr` id) e
+    let evals' = luaFlattenList evals
+    pure evals'
+
+evalStmt (Local ids Nothing) ret = do
     env <- get
     env' <- bindAll env (zip ids (repeat Nil))
     put env'
-    pure []
+    pure $ ret []
 
-evalStmt (Local ids (Just vals)) = do
-    evals <- mapM evalExpr vals
+evalStmt (Local ids (Just vals)) ret = do
+    evals <- mapM (`evalExpr` ret) vals
     let evals' = Prelude.map head (init evals) ++ last evals
     env <- get
     env' <- bindAll env (zip ids evals')
     put env'
-    pure []
+    pure $ ret []
 
-evalStmt (Assignment lhs es) = do
-    evals <- mapM evalExpr es
+evalStmt (Assignment lhs es) ret = do
+    evals <- mapM (`evalExpr` ret) es
     let evals' = Prelude.map head (init evals) ++ last evals
     mapM_ (\(identifier,rhs) -> do
         env <- get
         assign identifier rhs env
         ) (zip lhs evals')
-    pure []
+    pure $ ret []
 
-evalStmt Break = undefined
-evalStmt (RepeatUntil e b) = undefined
-evalStmt (If e b el m) = undefined
+evalStmt Break _ = pure []
+evalStmt (RepeatUntil e b) ret = undefined
+evalStmt (If e b el m) ret = do
+    val <- evalExpr e ret
+    out <-
+            if isTrue (last val) then
+                evalBlock b ret
+            else 
+                do 
+                    conds <- mapM (\(cond,_) -> (do evalExpr cond ret)) el
+                    let condsWithBlocks = Prelude.filter (\(cond,_) -> isTrue (last cond)) $ zip conds (Prelude.map snd el)
+                    case condsWithBlocks of
+                        [] -> 
+                            case m of 
+                                Nothing -> pure $ ret []
+                                Just m' -> evalBlock m' ret
+                        (_,block):_ -> evalBlock block ret
+    pure $ ret out
 
-evalStmt (Call name es) = do
+evalStmt (Call name es) ret = do
     env <- get
     var <- lookup name env
-    evals <- mapM evalExpr es
-    let evals' = Prelude.map head (init evals) ++ last evals
+    evals <- mapM (`evalExpr` ret) es
+    let evals' = case evals of
+                    [] -> []
+                    _ -> Prelude.map head (init evals) ++ last evals
     case var of
-        Builtin (BuiltinCall c) -> c evals'
-        Function env' args body -> do
-            undefined
+        Builtin (BuiltinCall c) -> do 
+            out <- c evals'
+            pure $ ret out
+        Function closure params body -> do
+            env <- get
+            env' <- bindAll closure (zip params (evals' ++ repeat Nil))
+            put env'
+            mapM_ (`evalStmt` ret) (getStatements body)
+            put env
+            pure $ ret []
         _ -> throwError $ NotCallable var
 
-evalStmt (Do b) = evalBlock b
+evalStmt (Do b) ret = evalBlock b ret
 
-evalStmt (While e b) = do
+evalStmt (While e b) ret = do
     undefined
 
-evalStmt Dummy = pure []
+evalStmt Dummy ret = pure $ ret []
 
 isTrue :: Value -> Bool
 isTrue Nil = False
 isTrue (Boolean False) = False
 isTrue _ = True
 
-evalExpr :: Expr -> Eval [Value]
-evalExpr (EValue a) = pure [a]
+evalExpr :: Expr -> ([Value] -> [Value]) -> Eval [Value]
+evalExpr (EValue a) ret = pure $ ret [a]
 
-evalExpr (EVar var) = do
+evalExpr (EVar var) ret = do
     env <- get
     val <- lookup var env
-    pure [val]
+    pure $ ret [val]
 
-evalExpr (ECall {}) = undefined -- lookup function and call it
-evalExpr (EFuncDef {}) = undefined -- add a function to env
+evalExpr (ECall name args) ret = do 
+    env <- get
+    var <- lookup name env
+    evals <- mapM (`evalExpr` ret) args
+    let evals' = case evals of
+                    [] -> []
+                    _ -> Prelude.map head (init evals) ++ last evals
+    case var of
+        Builtin (BuiltinCall c) -> do 
+            out <- c evals'
+            pure $ ret out
+        Function closure params body -> do
+            env <- get
+            env' <- bindAll closure (zip params (evals' ++ repeat Nil))
+            put env'
+            vals <- mapM (`evalStmt` ret) (getStatements body)
+            put env
+            pure $ ret (luaFlattenList vals)
+        _ -> throwError $ NotCallable var -- lookup function and call it
+evalExpr (EFuncDef params block) ret = do
+    closure <- get
+    pure $ ret [Function closure params block]
 
-evalExpr (EPar e) = evalExpr e
-evalExpr (EBinOp And e1 e2) = do
-    e1t' <- evalExpr e1
+evalExpr (EPar e) ret = evalExpr e ret
+
+evalExpr (EBinOp And e1 e2) ret = do
+    e1t' <- evalExpr e1 ret
     let e1' = head e1t'
-    if isTrue e1' then evalExpr e2 else pure [e1']
-evalExpr (EBinOp Or e1 e2) = do
-    e1t' <- evalExpr e1
+    if isTrue e1' then evalExpr e2 ret else pure $ ret [e1']
+
+evalExpr (EBinOp Or e1 e2) ret = do
+    e1t' <- evalExpr e1 ret
     let e1' = head e1t'
-    if isTrue e1' then pure [e1'] else evalExpr e2
-evalExpr (EBinOp op e1 e2) = do
-    e1t' <- evalExpr e1
+    if isTrue e1' then pure $ ret [e1'] else evalExpr e2 ret
+
+evalExpr (EBinOp op e1 e2) ret = do
+    e1t' <- evalExpr e1 ret
     let e1' = head e1t'
-    e2t' <- evalExpr e2
+    e2t' <- evalExpr e2 ret
     let e2' = head e2t'
-    pure $ (:[]) $ case op of
-        Add -> add e1' e2'
-        Sub -> sub e1' e2'
-        Mul -> mul e1' e2'
-        Div -> div' e1' e2'
-        BitwiseAnd -> band e1' e2'
-        BitwiseOr -> bor e1' e2'
-        Xor -> xor' e1' e2'
-        Eq -> Boolean $ e1' == e2'
-        Lt -> Boolean $ e1' `lt` e2'
-        Gt -> Boolean $ e2' `lt` e1'
-        Ge -> Boolean $ e2' `le` e1'
-        Le -> Boolean $ e1' `le` e2'
-        Ne -> Boolean $ e1' /= e2'
-        Concat -> String $ show e1' ++ show e2'
-evalExpr (EUnOp op a) = do
-    at' <- evalExpr a
+    res <- case op of
+                Add -> add e1' e2'
+                Sub -> sub e1' e2'
+                Mul -> mul e1' e2'
+                Div -> div' e1' e2'
+                BitwiseAnd -> band e1' e2'
+                BitwiseOr -> bor e1' e2'
+                Xor -> xor' e1' e2'
+                Eq -> eq' e1' e2'
+                Lt -> e1' `lt` e2'
+                Gt -> e2' `lt` e1'
+                Ge -> e2' `le` e1'
+                Le -> e1' `le` e2'
+                Ne -> e1' `neq'` e2'
+                Concat -> e1' `concat'` e2'
+    pure $ ret $ (:[]) res
+
+evalExpr (EUnOp op a) ret = do
+    at' <- evalExpr a ret
     let a' = head at'
-    pure $ case op of
-        Minus -> [minus' a']
-        Not -> [bitwiseNot' a']
-        Len ->
-            case a' of
-                (String s) -> [Number $ fromIntegral (length s)]
-                _ -> error $ "unsupported operand for length: " ++ show a'
+    res <- case op of
+        Minus -> minus' a'
+        Not -> bitwiseNot' a'
+        Len -> len' a'
+    pure $ ret $ (:[]) res
+    
 
-unOp :: (Numeric -> Numeric) -> String -> Value -> Value
-unOp op _ (Number a) = Number $ op a
-unOp _ opStr a = error $ "unsupported operand for " ++ opStr ++ ": " ++ show a
+unOp :: (Numeric -> Numeric) -> String -> Value -> Eval Value
+unOp op _ (Number a) = pure $ Number $ op a
+unOp _ opStr a = throwError (UnsupportedUnOperation opStr (EValue a))
 
-unsupportedBinOp opStr a b =  error $ "unsupported operands for " ++ opStr ++ ": " ++ show a ++ " " ++ show b
+eq' :: Value -> Value -> Eval Value
+eq' a b = pure $ Boolean $ a == b
+neq' :: Value -> Value -> Eval Value
+neq' a b = pure $ Boolean $ a /= b
+concat' :: Value -> Value -> Eval Value
+concat' a b = pure $ String $ show a ++ show b
+len' :: Value -> Eval Value
+len' (String s) = pure $ Number $ fromIntegral (length s)
+len' i = throwError (UnsupportedUnOperation "length" (EValue i))
 minus' = unOp negate "unary minus"
 bitwiseNot' = unOp bitwiseNot "bitwise negation"
 
-lt (String a) (String b) = a < b
-lt (Number a) (Number b) = a < b
-lt a b = unsupportedBinOp "less than" a b
+lt :: Value -> Value -> Eval Value
+lt (String a) (String b) = pure $ Boolean $ a < b
+lt (Number a) (Number b) = pure $ Boolean $ a < b
+lt a b = throwError (UnsupportedBinOperation "less-than" (EValue a) (EValue b))
 
-le (String a) (String b) = a <= b
-le (Number a) (Number b) = a <= b
-le a b = unsupportedBinOp "less than or equal" a b
+le :: Value -> Value -> Eval Value
+le (String a) (String b) = pure $ Boolean $ a <= b
+le (Number a) (Number b) = pure $ Boolean $ a <= b
+le a b = throwError (UnsupportedBinOperation "less-than-or-equals" (EValue a) (EValue b))
 
-binOp :: (Numeric -> Numeric -> Numeric) -> String -> Value -> Value -> Value
-binOp op _ (Number a) (Number b) = Number (a `op` b)
-binOp _ opStr a b = unsupportedBinOp opStr a b
+binOp :: (Numeric -> Numeric -> Numeric) -> String -> Value -> Value -> Eval Value
+binOp op _ (Number a) (Number b) = pure $ Number (a `op` b)
+binOp _ opStr a b = throwError (UnsupportedBinOperation opStr (EValue a) (EValue b))
+
 add = binOp (+) "addition"
 sub = binOp (-) "subtraction"
 mul = binOp (*) "multiplication"
