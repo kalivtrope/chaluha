@@ -51,10 +51,14 @@ instance Applicative Parser where
       (a, input'') <- p2 input'
       pure (f a, input'')
 
-instance Alternative (Either ParserError) where
+-- | I don't know why but I got overlapping instances with Control.Monad.Trans.Error
+-- I started getting the error after including both Control.Monad.Except and Control.Monad.State .
+-- Hopefully the {-# OVERLAPS -#} doesn't break anything.
+instance {-# OVERLAPS #-} Alternative (Either ParserError) where
   empty = Left $ ParserError 1 "empty"
   Left _ <|> e2 = e2
   e1 <|> _ = e1
+
 
 instance Alternative Parser where
   empty = Parser $ const empty
@@ -146,14 +150,17 @@ ws :: Parser String
 ws = many (parseIf' "whitespace character" isSpace <|> (' ' <$ shortComment))
 
 luaBlock :: Parser Block
-luaBlock = Block <$> (many luaStmt) <*> optional retStmt
+luaBlock = (\x y-> case y of
+                    Just y' -> Block (x ++ [Return y'])
+                    Nothing -> Block x) <$> many luaStmt <*> optional retStmt
 
 retStmt :: Parser [Expr]
-retStmt = stringP "return" *> (fromMaybe [] <$> optional explist) <* optional (charP ';')
+retStmt = stringP "return" *> (fromMaybe [] <$> optional explist1) <* optional (charP ';')
 
 luaStmt :: Parser Statement
 luaStmt =
   luaAssignment
+    <|> funcCallStmt
     <|> localAssignment
     <|> dummy
     <|> break
@@ -161,38 +168,20 @@ luaStmt =
     <|> whileBlock
     <|> repeatUntilBlock
     <|> ifStmt
-    <|> forNum
-    <|> forIn
     <|> namedFunc
 
 namedFunc :: Parser Statement
 namedFunc =
-  (\name vars block -> Assignment [LIdent name] [EFuncDef vars block])
+  (\name vars block -> Assignment [name] [EFuncDef vars block])
     <$> (stringP "function" *> luaIdentifier)
     <*> (charP '(' *> identlist <* charP ')')
     <*> (luaBlock <* stringP "end")
-
-forNum :: Parser Statement
-forNum =
-  ForNum
-    <$> (stringP "for" *> luaIdentifier)
-    <*> (charP '=' *> luaExpr)
-    <*> (charP ',' *> luaExpr)
-    <*> optional (charP ',' *> luaExpr)
-    <*> luaBlock
-
-forIn :: Parser Statement
-forIn =
-  ForIn
-    <$> (stringP "for" *> identlist1)
-    <*> (stringP "in" *> explist)
-    <*> (stringP "do" *> luaBlock <* stringP "end")
 
 localAssignment :: Parser Statement
 localAssignment =
   Local
     <$> (stringP "local" *> identlist1)
-    <*> optional (charP '=' *> explist)
+    <*> optional (charP '=' *> explist1)
 
 identlist :: Parser [Identifier]
 identlist = sepBy (charP ',') luaIdentifier
@@ -236,9 +225,17 @@ luaExpr = expr0
 luaAtom :: Parser Expr
 luaAtom =
   luaValue
+    <|> funcCallExpr
     <|> luaVar
     <|> unnamedFunc
     <|> (charP '(' *> luaExpr <* charP ')')
+
+funcCallExpr :: Parser Expr
+funcCallExpr = ECall <$>
+            (ws *> luaIdentifier) <*> (charP '(' *> explist <* charP ')')
+funcCallStmt :: Parser Statement
+funcCallStmt = Call <$>
+            (ws *> luaIdentifier) <*> (charP '(' *> explist <* charP ')')
 
 unnamedFunc :: Parser Expr
 unnamedFunc =
@@ -260,14 +257,17 @@ sepBy sep element = sepBy1 sep element <|> pure []
 
 luaAssignment :: Parser Statement
 luaAssignment =
-  (Assignment . map (\(EVar y) -> LIdent y)
-     <$> (varlist <* charP '='))
-    <*> explist
+  (Assignment . map (\(EVar y) -> y)
+     <$> (ws *> varlist <* charP '='))
+    <*> explist1
   where
     varlist = sepBy1 (charP ',') luaVar
 
 explist :: Parser [Expr]
-explist = sepBy1 (charP ',') luaExpr
+explist = sepBy (charP ',') luaExpr
+
+explist1 :: Parser [Expr]
+explist1 = sepBy1 (charP ',') luaExpr
 
 luaVar :: Parser Expr
 luaVar = EVar <$> luaIdentifier
@@ -313,20 +313,20 @@ luaIdentifier = pIfNotq "identifier" bareIdentifier keywordsP
         <*> spanP "part of identifier" isAlphaNum
 
 luaNil :: Parser Expr
-luaNil = EType Nil <$ stringP "nil"
+luaNil = EValue Nil <$ stringP "nil"
 
 luaBool :: Parser Expr
 luaBool = luaTrue <|> luaFalse
   where
-    luaTrue = EType (Boolean True) <$ stringP "true"
-    luaFalse = EType (Boolean False) <$ stringP "false"
+    luaTrue = EValue (Boolean True) <$ stringP "true"
+    luaFalse = EValue (Boolean False) <$ stringP "false"
 
 luaNumber :: Parser Expr
-luaNumber = EType . Number <$> (numberHex <|> numberDec)
+luaNumber = EValue . Number <$> (numberHex <|> numberDec)
 
 luaString :: Parser Expr
 luaString =
-  EType . String <$> (charP '"' *> spanP "quote" (/= '"') <* charP '"')
+  EValue . String <$> (charP '"' *> spanP "quote" (/= '"') <* charP '"')
 
 option :: a -> Parser a -> Parser a
 option defVal p = p <|> pure defVal
@@ -407,8 +407,6 @@ expr2 =
     $ EBinOp
         <$> ((Le <$ stringP "<=")
                <|> (Ge <$ stringP ">=")
-               <|> (Lt <$ stringP "<")
-               <|> (Gt <$ stringP ">")
                <|> (Ne <$ stringP "~=")
                <|> (Lt <$ stringP "<")
                <|> (Gt <$ stringP ">")
@@ -428,8 +426,7 @@ expr8 =
   chainl1 expr9
     $ EBinOp
         <$> ((Mul <$ charP '*')
-               <|> (Div <$ stringP "/")
-               <|> (Mod <$ stringP "%"))
+               <|> (Div <$ stringP "/"))
 
 expr9 =
   prefix luaAtom

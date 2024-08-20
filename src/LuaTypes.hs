@@ -1,18 +1,22 @@
 {-# LANGUAGE InstanceSigs #-}
+
 module LuaTypes where
 
-import qualified Data.Int
-import Data.Map
-import Prelude hiding (lookup, showList)
+import Control.Monad.Except
+import Control.Monad.State
+import Data.Bits (Bits(..))
+import Data.Foldable (foldrM)
+import Data.IORef
+import Data.Int (Int64)
+import Data.List hiding (lookup)
+import qualified Data.Map as Map
+import Prelude hiding (lookup, showList, toInteger)
 import System.Environment ()
-import Data.List
+import Data.Maybe (isNothing)
 
--- TODO: object store? Address -> Value
 type Identifier = String
 
-data Env
-
--- AST is based on https://www.lua.org/manual/5.4/manual.html#9
+-- AST based on https://www.lua.org/manual/5.4/manual.html#9
 data Numeric
   = Integer Data.Int.Int64
   | Double Double
@@ -21,11 +25,58 @@ instance Show Numeric where
   show (Integer i) = show i
   show (Double d) = show d
 
+toDouble :: Numeric -> Numeric
+toDouble (Double d) = Double d
+toDouble (Integer i) = Double $ fromIntegral i
+
+toInteger :: Numeric -> Numeric
+toInteger (Double d) = Integer $ floor d
+toInteger (Integer i) = Integer i
+
+samEValue :: Numeric -> Numeric -> Bool
+samEValue (Double _) (Double _) = True
+samEValue (Integer _) (Integer _) = True
+samEValue _ _ = False
+
 instance Ord Numeric where
   Integer a <= Integer b = a <= b
-  Integer a <= Double b = fromIntegral a <= b
-  Double a <= Integer b = a <= fromIntegral b
   Double a <= Double b = a <= b
+  x <= y = toDouble x <= toDouble y
+
+instance Num Numeric where
+  Integer a + Integer b = Integer (a + b)
+  Double a + Double b = Double (a + b)
+  x + y = toDouble x + toDouble y
+  Integer a * Integer b = Integer (a * b)
+  Double a * Double b = Double (a * b)
+  x * y = toDouble x * toDouble y
+  abs (Integer a) = Integer $ abs a
+  abs (Double a) = Double $ abs a
+  signum (Integer a) = Integer $ signum a
+  signum (Double a) = Double $ signum a
+  fromInteger i = Integer $ fromInteger i
+  negate (Integer a) = Integer $ negate a
+  negate (Double a) = Double $ negate a
+
+bitwiseOp :: (Int64 -> Int64 -> Int64) -> Numeric -> Numeric -> Numeric
+bitwiseOp op (Integer a) (Integer b) = Integer $ a `op` b
+bitwiseOp op x y = bitwiseOp op (toInteger x) (toInteger y)
+
+bitwiseNot (Integer a) = Integer $ complement a
+bitwiseNot d = bitwiseNot $ toInteger d
+
+bitwiseOr = bitwiseOp (.|.)
+
+bitwiseAnd = bitwiseOp (.&.)
+
+bitwiseXor = bitwiseOp xor
+
+instance Fractional Numeric where
+  fromRational :: Rational -> Numeric
+  fromRational x = Double $ fromRational x
+  (/) :: Numeric -> Numeric -> Numeric
+  Double a / Double b = Double $ a / b
+  x / y = toDouble x / toDouble y
 
 instance Eq Numeric where
   Integer a == Integer b = a == b
@@ -33,169 +84,156 @@ instance Eq Numeric where
   Double a == Integer b = a == fromIntegral b
   Double a == Double b = a == b
 
-data Table = TableData
-  { getTable :: Map Value Value
-  , getMetatable :: Maybe Table
-  } deriving (Eq, Ord)
+newtype BuiltinCall =  BuiltinCall ([Value] -> Eval [Value])
+instance Eq BuiltinCall where
+  _ == _ = False
 
-
-data Value = Value
-  { getReferenceId :: Maybe Int
-  , getValue :: Type
-  } deriving (Ord)
-
-data Type
+data Value
   = Nil
   | Number Numeric
   | Boolean Bool
   | String String
   | Function
-      { getEnv :: () -- TODO
-      , getArguments :: [Int]
+      { getEnv :: Env
+      , getParams :: [Identifier]
       , getBody :: Block
       }
-  | Table Table
-  -- | Userdata
-  -- | Thread
-  deriving (Eq, Ord)
+  | Builtin BuiltinCall
+  deriving (Eq)
 
-instance Show Type where
+instance Show Value where
   show Nil = "nil"
   show (Number n) = show n
   show (Boolean b) = show b
   show (String s) = show s
+  show (Builtin _) = "builtin"
   show _ = undefined
 
-instance Eq Value where
-  (==) :: Value -> Value -> Bool
-  (Value _ Nil) == (Value _ Nil) = True
-  (Value _ (Number v1)) == (Value _ (Number v2)) = v1 == v2
-  (Value _ (Boolean b1)) == (Value _ (Boolean b2)) = b1 == b2
-  (Value _ (String s1)) == (Value _ (String s2)) = s1 == s2
-  (Value id1 (Function {})) == (Value id2 (Function {})) = id1 == id2
-  (Value id1 (Table t1)) == (Value id2 (Table t2)) =
-    case (t1, t2) of
-      (TableData _ _, TableData _ _) -> id1 == id2
-  _ == _ = False
-
-data Lhs
-  = LIdent Identifier
-  | LIndex Expr Expr
-  deriving (Eq, Ord)
-
-instance Show Lhs where
-  show (LIdent i) = i
-  show (LIndex a b) = show a ++ "[" ++ show b ++ "]"
+type Lhs
+  = String
+  -- | LIndex Expr Expr
 
 data Statement
   = Assignment [Lhs] [Expr]
   | Call Identifier [Expr]
   | Break
+  | Return [Expr]
   | Do Block
   | While Expr Block
   | RepeatUntil Expr Block
   | If Expr Block [(Expr, Block)] (Maybe Block)
   | Local [Identifier] (Maybe [Expr])
-  | ForNum Identifier Expr Expr (Maybe Expr) Block
-  | ForIn [Identifier] [Expr] Block
   | Dummy
   -- | Label String
   -- | Goto String
-  deriving (Eq, Ord)
+  deriving (Eq)
 
 commaSeparatedList :: [String] -> String
 commaSeparatedList = intercalate ", "
+
 showList :: Show a => [a] -> [String]
 showList = Data.List.map show
+
 commaSeparatedShow :: Show a => [a] -> String
 commaSeparatedShow vals = commaSeparatedList (showList vals)
 
 indent :: String -> String
-indent = concatMap (\x -> if x == '\n' then "\n" ++ tab else [x])
+indent =
+  concatMap
+    (\x ->
+       if x == '\n'
+         then "\n" ++ tab
+         else [x])
 
 tab :: String
 tab = "  "
 
 instance Show Statement where
-  show (Assignment lhs rhs) = commaSeparatedShow lhs ++ " = " ++ commaSeparatedShow rhs
+  show (Assignment lhs rhs) =
+    commaSeparatedList lhs ++ " = " ++ commaSeparatedShow rhs
   show (Call fnName es) = fnName ++ "(" ++ commaSeparatedShow es ++ ")"
   show Break = "break"
   show (Do b) = "do" ++ indent ("\n" ++ show b) ++ "\nend"
-  show (While cond b) = "while " ++ show cond ++ " do" ++ indent ("\n" ++ show b) ++ "\nend"
-  show (RepeatUntil cond b) = "repeat" ++ indent ("\n" ++ show b) ++ "\n" ++ "until " ++ show cond
-  show (If ifcond tb elseifs elseb) = "if " ++ show ifcond ++ " then" ++ indent ("\n" ++ show tb)
-    ++ intercalate "" (Data.List.map showElseIf elseifs) ++ (
-      case elseb of
-        Just b -> "else" ++ indent ("\n" ++ show b)
-        Nothing -> ""
-    ) ++ "\nend"
-    where showElseIf (e, b) = "\nelseif " ++ show e ++ " then" ++ indent ("\n" ++ show b)
-  show (Local ids vals) = "local " ++ commaSeparatedList ids ++ (
-    case vals of
-      Just v -> " = " ++ commaSeparatedShow v
-      Nothing -> ""
-    )
-  show (ForNum ident start end step b) = "for " ++ ident ++ "=" ++ show start ++ "," ++ show end ++ (
-    case step of
-      Just s -> "," ++ show s
-      Nothing -> ""
-    ) ++ " do" ++ indent ("\n" ++ show b) ++ "\nend"
-  show (ForIn ids exps b) = "for " ++ commaSeparatedList ids ++ " in " ++ commaSeparatedShow exps ++ " do" ++ indent ("\n" ++ show b) ++ "\nend"
+  show (While cond b) =
+    "while " ++ show cond ++ " do" ++ indent ("\n" ++ show b) ++ "\nend"
+  show (RepeatUntil cond b) =
+    "repeat" ++ indent ("\n" ++ show b) ++ "\n" ++ "until " ++ show cond
+  show (If ifcond tb elseifs elseb) =
+    "if "
+      ++ show ifcond
+      ++ " then"
+      ++ indent ("\n" ++ show tb)
+      ++ intercalate "" (Data.List.map showElseIf elseifs)
+      ++ (case elseb of
+            Just b -> "else" ++ indent ("\n" ++ show b)
+            Nothing -> "")
+      ++ "\nend"
+    where
+      showElseIf (e, b) =
+        "\nelseif " ++ show e ++ " then" ++ indent ("\n" ++ show b)
+  show (Local ids vals) =
+    "local "
+      ++ commaSeparatedList ids
+      ++ (case vals of
+            Just v -> " = " ++ commaSeparatedShow v
+            Nothing -> "")
   show Dummy = ""
+  show (Return e) = "return " ++ commaSeparatedShow e
 
-data Block = Block
+newtype Block = Block
   { getStatements :: [Statement]
-  , getReturn :: Maybe [Expr]
-  } deriving (Eq, Ord)
+  } deriving (Eq)
 
 instance Show Block where
-  show (Block s r) = intercalate "\n" (Data.List.map show s) ++ (
-    case r of
-      Just r' -> "\nreturn " ++ commaSeparatedShow r'
-      Nothing -> ""
-    )
+  show (Block s) = intercalate "\n" (Data.List.map show s)
+
 data Expr
-  = EType Type
+  = EValue Value
   | EBinOp BinOp Expr Expr
   | EUnOp UnOp Expr
   | EVar Identifier
   | ECall Identifier [Expr]
   | EPar Expr
-  | ELhs Lhs
-  | EDots
   | EFuncDef [Identifier] Block
-  deriving (Eq, Ord)
+  deriving (Eq)
 
 isAtomic :: Expr -> Bool
-isAtomic (EType _) = True
+isAtomic (EValue _) = True
 isAtomic (EBinOp {}) = False
 isAtomic (EUnOp _ _) = True
 isAtomic (EVar _) = True
 isAtomic (ECall _ _) = True
 isAtomic (EPar _) = True
-isAtomic (ELhs _) = False
-isAtomic EDots = True
 isAtomic (EFuncDef _ _) = False
 
 instance Show Expr where
-  show (EType val) = show val
-  show (EBinOp op e1 e2) = (
-    if isAtomic e1 then show e1 else "(" ++ show e1 ++ ")"
-    ) ++ " " ++ show op ++ " " ++(  if isAtomic e2 then show e2 else "(" ++ show e2 ++ ")")
+  show (EValue val) = show val
+  show (EBinOp op e1 e2) =
+    (if isAtomic e1
+       then show e1
+       else "(" ++ show e1 ++ ")")
+      ++ " "
+      ++ show op
+      ++ " "
+      ++ (if isAtomic e2
+            then show e2
+            else "(" ++ show e2 ++ ")")
   show (EUnOp op e) = show op ++ show e
   show (EVar i) = i
-  show (ECall i es) = show i ++ "(" ++ commaSeparatedShow es ++ ")"
+  show (ECall i es) = i ++ "(" ++ commaSeparatedShow es ++ ")"
   show (EPar e) = "(" ++ show e ++ ")"
-  show (ELhs l) = show l
-  show EDots = "..."
-  show (EFuncDef params b) = "function (" ++ commaSeparatedList params ++ ")" ++ indent ("\n" ++ show b) ++ "\nend"
+  show (EFuncDef params b) =
+    "function ("
+      ++ commaSeparatedList params
+      ++ ")"
+      ++ indent ("\n" ++ show b)
+      ++ "\nend"
+
 data BinOp
   = Add
   | Sub
   | Mul
   | Div
-  | FloorDiv
-  | Mod
   | Concat
   | Eq
   | Lt
@@ -215,8 +253,6 @@ instance Show BinOp where
   show Sub = "-"
   show Mul = "*"
   show Div = "/"
-  show FloorDiv = "//"
-  show Mod = "%"
   show Concat = ".."
   show Eq = "=="
   show Lt = "<"
@@ -229,6 +265,7 @@ instance Show BinOp where
   show BitwiseAnd = "&"
   show BitwiseOr = "|"
   show Xor = "~"
+
 data UnOp
   = Minus
   | Not
@@ -239,3 +276,115 @@ instance Show UnOp where
   show Minus = "-"
   show Not = "~"
   show Len = "#"
+
+data LuaError
+  = UnsupportedOperation String Value Value
+  | NotCallable Value
+  deriving (Eq)
+
+instance Show LuaError where
+  show err =
+    "Error: "
+      ++ case err of
+           UnsupportedOperation opStr v1 v2 ->
+             "unsupported operands for '"
+               ++ opStr
+               ++ "': "
+               ++ show v1
+               ++ " "
+               ++ show v2
+           NotCallable v -> "'" ++ show v ++ "' is not callable"
+
+data Env = Env
+  { bindings :: Map.Map String (IORef Value)
+  , parent :: Maybe Env
+  } deriving (Eq)
+
+type Eval a = StateT Env (ExceptT LuaError IO) a
+
+emptyEnv :: IO Env
+emptyEnv = pure $ Env {bindings = Map.empty, parent = Nothing}
+
+defaultEnv :: IO Env
+defaultEnv = do
+  builtinRefs <- mapM newIORef builtins
+  pure (Env {bindings = builtinRefs, parent = Nothing})
+
+-- guaranteed local assignment
+bind :: String -> Value -> Env -> Eval Env
+bind name value env = do
+  valueRef <- liftIO $ newIORef value
+  pure $ env {bindings = Map.insert name valueRef (bindings env)}
+
+
+-- (potentially) global assignment
+assign :: String -> Value -> Env -> Eval ()
+assign name value env@(Env bindings' parent') =
+  case Map.lookup name bindings' of
+    Nothing ->
+      case parent' of
+        Nothing ->
+          if value == Nil
+            then do
+              pure ()
+            else do
+              bound <- bind name value env
+              put bound
+        Just p -> do
+          assign name value p
+          env' <- get
+          put env {parent = Just env'}
+    Just valueRef ->
+          liftIO $ writeIORef valueRef value
+
+dumpEnv :: Env -> IO ()
+dumpEnv (Env bindings' parent') =
+  do
+    print $ Map.keys (bindings')
+    case parent' of
+      Nothing -> pure ()
+      Just p -> dumpEnv p
+
+-- remove a variable when assigning it to nil
+unbind :: String -> Env -> Eval Env
+unbind name env = do
+  pure $ env {bindings = Map.delete name (bindings env)}
+
+lookup :: String -> Env -> Eval Value
+lookup name (Env bindings' parent') =
+  case Map.lookup name bindings' of
+    Nothing ->
+      case parent' of
+        Nothing -> pure Nil
+        Just p -> lookup name p
+    Just valueRef -> do
+      liftIO $ readIORef valueRef
+
+bindAll :: Env -> [(Identifier, Value)] -> Eval Env
+bindAll = foldrM (uncurry bind)
+
+withEnv :: Env -> Eval a -> Eval a
+withEnv env computation = do
+  -- old <- get
+  put env
+  result <- computation
+  env' <- get
+  put $ Env {bindings = (case parent env' of
+                          Nothing -> Map.empty
+                          Just e -> bindings e), parent = parent env'}
+  -- env' <- get
+  -- x <- lookup "x" env'
+  -- p <- lookup "print" env
+  -- p' <- lookup "print" env'
+  -- liftIO $ print $ "got x: " ++ show x ++ " parent exists: " ++ show (isNothing $ parent env') ++ " original nest: " ++ show p ++ " current: " ++ show p' 
+  pure result
+
+builtins :: Map.Map String Value
+builtins = Builtin . BuiltinCall <$> Map.fromList
+  [
+    ("print", printVal)
+  ]
+printVal :: [Value] -> Eval [Value]
+printVal vals = do
+  liftIO $ putStrLn $ intercalate tab (map show vals)
+  pure []
