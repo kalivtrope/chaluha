@@ -17,13 +17,10 @@ runEvalDefault computation = do
 evalBlock :: Block -> ([Value] -> Eval [Value]) -> Eval [Value]
 evalBlock b ret = do
     env <- get
-    let env' = Env {bindings = empty, parent = Just env}
+    let env' = env {bindings = empty, parent = Just env}
     put env'
     results <- mapM (`evalStmt` ret) (getStatements b)
-    env'' <- get
-    put $ Env {bindings = (case parent env'' of
-                        Nothing -> empty
-                        Just e -> bindings e), parent = parent env''}
+    put env
     case results of
         [] -> ret []
         _ -> ret $ last results
@@ -57,8 +54,8 @@ evalStmt (Assignment lhs es) ret = do
     evals <- mapM evalExpr es
     let evals' = luaFlattenList evals
     mapM_ (\(identifier,rhs) -> do
-        env <- get
-        assign identifier rhs env
+        env' <- get
+        assign identifier rhs env'
         ) (zip lhs evals')
     ret []
 
@@ -149,7 +146,7 @@ evalExpr (ECall name args) = do
             put env'
             vals <- mapM (`evalStmt` pure) (getStatements body)
             put env
-            pure $ (luaFlattenList vals)
+            pure (luaFlattenList vals)
         _ -> throwError $ NotCallable var
         
 evalExpr (EFuncDef params block) = do

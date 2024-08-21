@@ -275,6 +275,7 @@ data LuaError
   = UnsupportedBinOperation String Expr Expr
   | UnsupportedUnOperation String Expr
   | NotCallable Value
+  | ImpossibleSituation String
   deriving (Eq)
 
 instance Show LuaError where
@@ -294,21 +295,26 @@ instance Show LuaError where
                 ++ "': "
                 ++ show v
            NotCallable v -> "'" ++ show v ++ "' is not callable"
+           ImpossibleSituation str -> "this shouldn't have happened: " ++ str
 
 data Env = Env
   { bindings :: Map.Map String (IORef Value)
   , parent :: Maybe Env
+  , globals :: IORef (Map.Map String Value)
   } deriving (Eq)
 
 type Eval a = StateT Env (ExceptT LuaError IO) a
 
 emptyEnv :: IO Env
-emptyEnv = pure $ Env {bindings = Map.empty, parent = Nothing}
+emptyEnv = do
+  globalRef <- newIORef Map.empty
+  pure $ Env {bindings = Map.empty, parent = Nothing, globals = globalRef }
 
 defaultEnv :: IO Env
 defaultEnv = do
   builtinRefs <- mapM newIORef builtins
-  pure (Env {bindings = builtinRefs, parent = Nothing})
+  globalRef <- newIORef Map.empty
+  pure (Env {bindings = builtinRefs, parent = Nothing, globals = globalRef})
 
 -- guaranteed local assignment
 bind :: String -> Value -> Env -> Eval Env
@@ -316,29 +322,47 @@ bind name value env = do
   valueRef <- liftIO $ newIORef value
   pure $ env {bindings = Map.insert name valueRef (bindings env)}
 
+isDeclared :: String -> Env -> Bool
+isDeclared name (Env bindings' parent' _) =
+  case Map.lookup name bindings' of
+    Nothing ->
+      case parent' of
+        Nothing -> False
+        Just p -> isDeclared name p
+    Just _ -> True
+
+isGlobal :: String -> Env -> Eval Bool
+isGlobal name (Env _ _ globals') = do
+  glob <- liftIO $ readIORef globals'
+  pure $ case Map.lookup name glob of
+    Nothing -> False
+    Just _ -> True
+
+declare :: String -> Value -> Env -> Eval ()
+declare name value (Env _ _ globals') = do
+    oldGlobals <- liftIO $ readIORef globals'
+    liftIO $ writeIORef globals' (Map.insert name value oldGlobals)
 
 -- (potentially) global assignment
 assign :: String -> Value -> Env -> Eval ()
-assign name value env@(Env bindings' parent') =
+assign name value env@(Env bindings' parent' globals') =
+  if not $ isDeclared name env then
+    do
+      declare name value env
+  else
   case Map.lookup name bindings' of
     Nothing ->
       case parent' of
         Nothing ->
-          if value == Nil
-            then do
-              pure ()
-            else do
-              bound <- bind name value env
-              put bound
+          do
+            throwError $ ImpossibleSituation "couldn't find a previously declared value"
         Just p -> do
           assign name value p
-          env' <- get
-          put env {parent = Just env'}
     Just valueRef ->
           liftIO $ writeIORef valueRef value
 
 dumpEnv :: Env -> IO ()
-dumpEnv (Env bindings' parent') =
+dumpEnv (Env bindings' parent' _) =
   do
     print $ Map.keys (bindings')
     case parent' of
@@ -346,11 +370,15 @@ dumpEnv (Env bindings' parent') =
       Just p -> dumpEnv p
 
 lookup :: String -> Env -> Eval Value
-lookup name (Env bindings' parent') =
+lookup name (Env bindings' parent' globals') =
   case Map.lookup name bindings' of
     Nothing ->
       case parent' of
-        Nothing -> pure Nil
+        Nothing -> do
+          globs <- liftIO $ readIORef globals'
+          case Map.lookup name globs of
+            Nothing -> pure Nil
+            Just v -> pure v
         Just p -> lookup name p
     Just valueRef -> do
       liftIO $ readIORef valueRef
