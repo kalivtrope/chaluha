@@ -68,7 +68,7 @@ data Statement
   | Do Block
   | If Expr Block [(Expr, Block)] (Maybe Block)
   | Local [Identifier] (Maybe [Expr])   -- local assignment
-  | Dummy
+  | Dummy   -- e.g. a semicolon
   deriving (Eq)
 ```
 
@@ -120,6 +120,7 @@ The core of the evaluation is the `Env`ironment data structure defined in [LuaTy
 data Env = Env
   { bindings :: Map.Map String (IORef Value)
   , parent :: Maybe Env
+  , globals :: IORef (Map.Map String Value)
   } deriving (Eq)
 ```
 
@@ -129,9 +130,11 @@ The `Env` is contained in a `StateT` monad `Eval`:
 type Eval a = StateT Env (ExceptT LuaError IO) a
 ```
 
-The implementation is based on [this post](https://www.micahcantor.com/blog/about-that-reader-trick/) and the [corresponding code](https://github.com/micahcantor/write-you-a-lisp/).
-The semantics of local and global variables are a bit different in lua (as oppposed to scheme),
-though, so I had to bend the functions to (hopefully) make the scopes work.
+### Credits
+The implementation is based on [this post](https://www.micahcantor.com/blog/about-that-reader-trick/)
+and the [corresponding code](https://github.com/micahcantor/write-you-a-lisp/).
+The semantics of local and global variables are a bit different in lua (compared to Scheme),
+most notable difference being that global variables can be declared inside of any scope.
 
 ## Unfinished parts
 To support arbitrary `return`s and loops (along with `break`s), I tried writing
